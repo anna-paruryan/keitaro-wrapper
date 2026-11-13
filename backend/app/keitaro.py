@@ -110,8 +110,9 @@ class KeitaroClient:
     def list_domains(self) -> list[dict]:
         return as_list(self._request("GET", "domains"))
 
-    def list_groups(self) -> list[dict]:
-        return as_list(self._request("GET", "groups"))
+    def list_groups(self, group_type: str = "campaigns") -> list[dict]:
+        # Keitaro требует параметр type: campaigns | offers | landings
+        return as_list(self._request("GET", "groups", params={"type": group_type}))
 
     def list_traffic_sources(self) -> list[dict]:
         return as_list(self._request("GET", "traffic_sources"))
