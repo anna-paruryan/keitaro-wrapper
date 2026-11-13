@@ -1,5 +1,7 @@
 # секреты и локальные настройки
 .env
+.env.*
+!.env.example
 
 # Python (backend)
 .venv/
