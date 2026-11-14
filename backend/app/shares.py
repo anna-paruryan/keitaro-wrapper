@@ -7,6 +7,7 @@ Keitaro хочет, чтобы доли офферов в потоке в сум
 
 import math
 from collections.abc import Sequence
+from typing import Optional
 
 TOTAL = 100
 
@@ -23,7 +24,7 @@ def allocate(weights: Sequence[float], total: int = TOTAL) -> list[int]:
     raw = [x * total / s for x in w]
     base = [math.floor(r) for r in raw]
     rest = total - sum(base)
-    # Остаток раздаём тем, у кого дробная часть больше; при равенстве — тому, кто выше в списке
+    # Остаток раздаём тем, у кого дробная часть больше; при равенстве - тому, кто выше в списке
     order = sorted(range(n), key=lambda i: (-(raw[i] - base[i]), i))
     for i in order[:rest]:
         base[i] += 1
@@ -35,32 +36,28 @@ def shares_equal(n: int) -> list[int]:
     return allocate([1.0] * n)
 
 
-def is_even(shares: Sequence[int]) -> bool:
-    """Доли «поровну» (с точностью до округления): 34/33/33, 50/50."""
-    return bool(shares) and max(shares) - min(shares) <= 1
+def distribute(pinned: Sequence[Optional[int]], total: int = TOTAL) -> list[int]:
+    """Доли с «пинами». На входе по одному элементу на оффер:
 
+    * число - закреплённая доля, она не меняется;
+    * None - свободный оффер: все свободные делят остаток поровну.
 
-def shares_after_add(existing: Sequence[int]) -> list[int]:
-    """Доли после добавления оффера (новый в конце).
+    distribute([None, None, None])  -> [34, 33, 33]
+    distribute([25, None, None])    -> [25, 38, 37]
+    distribute([25, 25, 25, 25])    -> [25, 25, 25, 25]
 
-    * Было поровну: делим поровну на новое число офферов (50/50 -> 34/33/33).
-    * Были свои пропорции (например 80/20): новый оффер получает «среднюю» долю,
-      остальные уменьшаются пропорционально, так что соотношение между старыми сохраняется.
+    ValueError, если расчёт невозможен (тогда сообщение можно показать пользователю).
     """
-    if not existing:
-        return [TOTAL]
-    if is_even(existing):
-        return shares_equal(len(existing) + 1)
-    mean = sum(existing) / len(existing)
-    return allocate([*existing, mean])
-
-
-def shares_after_remove(existing: Sequence[int], index: int) -> list[int]:
-    """Доли оставшихся офферов после удаления оффера с индексом `index`.
-
-    Было поровну: остаётся поровну (34/33/33 -> 50/50). Иначе пропорции оставшихся сохраняются.
-    """
-    remaining = [s for i, s in enumerate(existing) if i != index]
-    if is_even(existing):
-        return shares_equal(len(remaining))
-    return allocate(remaining)
+    if not pinned:
+        return []
+    free = [i for i, p in enumerate(pinned) if p is None]
+    fixed = sum(p for p in pinned if p is not None)
+    if free:
+        left = total - fixed
+        if left < len(free):
+            raise ValueError("The pinned shares leave no room for the other offers. Unpin one of them first.")
+        parts = iter(allocate([1.0] * len(free), left))
+        return [p if p is not None else next(parts) for p in pinned]
+    if fixed != total:
+        raise ValueError("All offers are pinned and their shares do not add up to 100%. Unpin one of the offers first.")
+    return [int(p) for p in pinned]

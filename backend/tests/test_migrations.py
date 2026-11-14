@@ -27,11 +27,11 @@ def test_upgrade_matches_models_and_downgrade_works(tmp_path):
 
     command.upgrade(cfg, "head")
     engine = make_engine(url)
-    assert {"campaigns", "offer_changes", "alembic_version"} <= set(inspect(engine).get_table_names())
+    assert {"campaigns", "offer_changes", "streams", "stream_offers", "alembic_version"} <= set(inspect(engine).get_table_names())
 
     with engine.connect() as conn:
         diff = compare_metadata(MigrationContext.configure(conn), Base.metadata)
     assert diff == [], f"миграция и модели разошлись: {diff}"
 
     command.downgrade(cfg, "base")
-    assert {"campaigns", "offer_changes"}.isdisjoint(inspect(make_engine(url)).get_table_names())
+    assert {"campaigns", "offer_changes", "streams", "stream_offers"}.isdisjoint(inspect(make_engine(url)).get_table_names())

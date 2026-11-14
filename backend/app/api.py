@@ -4,11 +4,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from . import services
+from . import editor, services
 from .config import Settings, get_settings
 from .db import get_db
 from .keitaro import KeitaroClient
-from .schemas import CreateCampaignIn, OfferIn
+from .schemas import CreateCampaignIn, OfferIn, PinIn
 from .services import AppError
 
 router = APIRouter(prefix="/api")
@@ -92,50 +92,66 @@ def campaigns(
     return services.list_campaigns(db, client, settings, q=q, mine=mine)
 
 
-@router.get("/campaigns/{campaign_id}")
-def campaign_detail(
+# --------------------------------------------------------------------------- редактор
+@router.get("/campaigns/{campaign_id}/streams")
+def saved_streams(campaign_id: int, db: Session = Depends(get_db)):
+    """Потоки и черновики из нашей базы (без запроса в Keitaro)."""
+    return editor.saved_streams(db, campaign_id)
+
+
+@router.post("/campaigns/{campaign_id}/fetch")
+def fetch_streams(
     campaign_id: int,
+    db: Session = Depends(get_db),
     client: KeitaroClient = Depends(get_client),
     settings: Settings = Depends(get_settings_dep),
 ):
-    return services.get_campaign_detail(client, settings, campaign_id)
+    """Fetch Streams: читает потоки из Keitaro и сверяет их с блокнотом. В Keitaro ничего не меняет."""
+    return editor.fetch_streams(db, client, settings, campaign_id)
 
 
 @router.get("/campaigns/{campaign_id}/changes")
 def campaign_changes(campaign_id: int, db: Session = Depends(get_db)):
-    return services.list_changes(db, campaign_id)
+    return editor.list_changes(db, campaign_id)
 
 
-@router.post("/campaigns/{campaign_id}/streams/{stream_id}/offers")
+@router.post("/streams/{stream_id}/offers")
 def add_offer(
-    campaign_id: int,
     stream_id: int,
     body: OfferIn,
     db: Session = Depends(get_db),
     client: KeitaroClient = Depends(get_client),
     settings: Settings = Depends(get_settings_dep),
 ):
-    return services.add_offer(db, client, settings, campaign_id, stream_id, body.offer_id)
+    return editor.add_offer(db, client, settings, stream_id, body.offer_id)
 
 
-@router.post("/campaigns/{campaign_id}/streams/{stream_id}/equalize")
-def equalize(
-    campaign_id: int,
+@router.post("/streams/{stream_id}/offers/{offer_id}/remove")
+def remove_offer(stream_id: int, offer_id: int, db: Session = Depends(get_db)):
+    return editor.remove_offer(db, stream_id, offer_id)
+
+
+@router.post("/streams/{stream_id}/offers/{offer_id}/restore")
+def restore_offer(stream_id: int, offer_id: int, db: Session = Depends(get_db)):
+    return editor.restore_offer(db, stream_id, offer_id)
+
+
+@router.post("/streams/{stream_id}/offers/{offer_id}/pin")
+def pin_offer(stream_id: int, offer_id: int, body: PinIn, db: Session = Depends(get_db)):
+    return editor.pin_offer(db, stream_id, offer_id, body.pinned)
+
+
+@router.post("/streams/{stream_id}/push")
+def push_stream(
     stream_id: int,
     db: Session = Depends(get_db),
     client: KeitaroClient = Depends(get_client),
     settings: Settings = Depends(get_settings_dep),
 ):
-    return services.equalize_shares(db, client, settings, campaign_id, stream_id)
+    """Push to KT: единственное место, где редактор пишет в Keitaro."""
+    return editor.push_stream(db, client, settings, stream_id)
 
 
-@router.delete("/campaigns/{campaign_id}/streams/{stream_id}/offers/{offer_id}")
-def remove_offer(
-    campaign_id: int,
-    stream_id: int,
-    offer_id: int,
-    db: Session = Depends(get_db),
-    client: KeitaroClient = Depends(get_client),
-    settings: Settings = Depends(get_settings_dep),
-):
-    return services.remove_offer(db, client, settings, campaign_id, stream_id, offer_id)
+@router.post("/streams/{stream_id}/cancel")
+def cancel_stream(stream_id: int, db: Session = Depends(get_db)):
+    return editor.cancel_stream(db, stream_id)

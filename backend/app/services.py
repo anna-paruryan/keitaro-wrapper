@@ -1,5 +1,6 @@
-"""Бизнес-логика: создание кампании и редактор офферов."""
+"""Бизнес-логика: создание кампании, справочники и поиск офферов. Редактор потоков живёт в editor.py."""
 
+import json
 import logging
 import re
 import secrets
@@ -15,8 +16,7 @@ from sqlalchemy.orm import Session
 
 from .config import Settings
 from .keitaro import KeitaroClient, KeitaroError
-from .models import Campaign, OfferChange
-from .shares import shares_after_add, shares_after_remove, shares_equal
+from .models import Campaign
 
 log = logging.getLogger(__name__)
 
@@ -180,14 +180,31 @@ def load_meta(client: KeitaroClient, settings: Settings) -> dict:
     sources = _simple(client.list_traffic_sources())
 
     domain = _pick(domains, None, settings.keitaro_domain, substring=True) or (domains[0] if domains else None)
-    group = _pick(groups, None, settings.keitaro_group_name)
+    group = _pick(groups, None, settings.keitaro_group_name) or (groups[0] if groups else None)
     source = _pick(sources, None, settings.keitaro_source_name)
+
+    # Что именно подставили вместо «идеальных» значений из задания (их может не быть в трекере).
+    notes: dict[str, str] = {}
+    if not domains:
+        notes["domain"] = "Keitaro returned no domains for this API key: the campaign will be created without a domain (no tracker link)."
+    elif settings.keitaro_domain and _pick(domains, None, settings.keitaro_domain, substring=True) is None:
+        notes["domain"] = f"Domain '{settings.keitaro_domain}' was not found: using '{domain['name']}'."
+    if not groups:
+        notes["group"] = "Keitaro returned no campaign groups: the campaign will be created without a group."
+    elif _pick(groups, None, settings.keitaro_group_name) is None:
+        notes["group"] = f"Group '{settings.keitaro_group_name}' was not found: using '{group['name']}'."
+    if not sources:
+        notes["source"] = "Keitaro returned no traffic sources: the campaign will be created without a source."
+    elif source is None:
+        notes["source"] = f"Traffic source '{settings.keitaro_source_name}' was not found: the campaign will be created without a source."
+
     return {
         "prefix": settings.campaign_prefix,
         "google_url": settings.google_redirect_url,
         "domains": domains,
         "groups": groups,
         "sources": sources,
+        "notes": notes,
         "defaults": {
             "domain_id": domain["id"] if domain else None,
             "group_id": group["id"] if group else None,
@@ -240,6 +257,42 @@ def _tracker_url(domain_name: Optional[str], alias: str) -> Optional[str]:
     return f"{base}/{alias}"
 
 
+def _keitaro_field_errors(exc: KeitaroError) -> dict[str, str]:
+    """Keitaro отвечает на неверные данные 422 вида {"name": ["сообщение"]}. Превращаем в {поле: "сообщение"}."""
+    data: Any = exc.body
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            return {}
+    for key in ("errors", "error", "message", "detail"):  # иногда ответ обёрнут
+        if isinstance(data, dict) and isinstance(data.get(key), dict):
+            data = data[key]
+    if not isinstance(data, dict):
+        return {}
+    errors = {}
+    for field, messages in data.items():
+        errors[str(field)] = "; ".join(str(m) for m in messages) if isinstance(messages, list) else str(messages)
+    return errors
+
+
+def _explain_campaign_rejection(exc: KeitaroError, full_name: str) -> None:
+    """Если Keitaro отклонил данные кампании (422), объясняем это человеческим языком вместо сырого JSON."""
+    if exc.status != 422:
+        return
+    errors = _keitaro_field_errors(exc)
+    if not errors:
+        return
+    name_error = errors.get("name", "").lower()
+    if "used" in name_error or "exist" in name_error:
+        raise AppError(
+            409,
+            f"The name '{full_name}' is already used in Keitaro (the campaign may be in the archive). Choose a different name.",
+        ) from exc
+    details = "; ".join(f"{field}: {message}" for field, message in errors.items())
+    raise AppError(422, f"Keitaro rejected the campaign: {details}.") from exc
+
+
 def create_campaign(
     db: Session,
     client: KeitaroClient,
@@ -265,36 +318,47 @@ def create_campaign(
         if traffic_source_id
         else _pick(meta["sources"], meta["defaults"]["traffic_source_id"])
     )
-    if domain is None:
-        raise AppError(422, "Could not choose a domain: Keitaro has no available domains or the given ID is invalid.")
-    if group is None:
-        raise AppError(422, f"Group not selected: '{settings.keitaro_group_name}' was not found among campaign groups. Pick a group in the form.")
-    if source is None:
-        raise AppError(422, f"Traffic source not selected: '{settings.keitaro_source_name}' was not found. Pick a source in the form.")
+    # Явно выбранный в форме ID обязан существовать; если ничего не выбрано, а в трекере пусто,
+    # кампания создаётся без домена/группы/источника (так же делают кампании других пользователей).
+    if domain_id and domain is None:
+        raise AppError(422, f"Domain {domain_id} was not found in Keitaro.")
+    if group_id and group is None:
+        raise AppError(422, f"Group {group_id} was not found among campaign groups.")
+    if traffic_source_id and source is None:
+        raise AppError(422, f"Traffic source {traffic_source_id} was not found in Keitaro.")
+    explicit = {"domain": domain_id, "group": group_id, "source": traffic_source_id}
+    notes = {kind: text for kind, text in meta["notes"].items() if not explicit[kind]}
 
     country_filter = detect_country_filter(client, settings)
     alias = random_alias()
 
-    campaign = client.create_campaign(
-        {
-            "name": full_name,
-            "alias": alias,
-            "type": "position",  # ротация потоков «по позиции»
-            "state": "active",
-            "cost_type": "CPC",
-            "cost_value": 0,
-            "cost_currency": "USD",
-            "cost_auto": True,  # галочка «Из параметра cost»
-            "domain_id": domain["id"],
-            "group_id": group["id"],
-            "traffic_source_id": source["id"],
-        }
-    )
+    campaign_payload = {
+        "name": full_name,
+        "alias": alias,
+        "type": "position",  # ротация потоков «по позиции»
+        "state": "active",
+        "cost_type": "CPC",
+        "cost_value": 0,
+        "cost_currency": "USD",
+        "cost_auto": True,  # галочка «Из параметра cost»
+    }
+    if domain:
+        campaign_payload["domain_id"] = domain["id"]
+    if group:
+        campaign_payload["group_id"] = group["id"]
+    if source:
+        campaign_payload["traffic_source_id"] = source["id"]
+    try:
+        campaign = client.create_campaign(campaign_payload)
+    except KeitaroError as exc:
+        _explain_campaign_rejection(exc, full_name)
+        raise
     if not isinstance(campaign, dict) or campaign.get("id") is None:
         raise KeitaroError("Keitaro created the campaign but did not return its ID.")
     campaign_id = int(campaign["id"])
     alias = str(campaign.get("alias") or alias)
 
+    step = "geo stream"
     try:
         geo_stream = client.create_stream(
             {
@@ -314,6 +378,7 @@ def create_campaign(
                 "offers": [],
             }
         )
+        step = "offer stream"
         offer_stream = client.create_stream(
             {
                 "campaign_id": campaign_id,
@@ -325,6 +390,8 @@ def create_campaign(
                 "collect_clicks": True,
                 "filter_or": False,
                 "schema": "landings",
+                # Keitaro requires action_type on every stream, even one that shows offers
+                "action_type": "http",
                 "filters": [],
                 "landings": [],
                 "offers": [{"offer_id": offer["id"], "share": 100, "state": "active"}],
@@ -339,11 +406,11 @@ def create_campaign(
             cleaned = False
             log.warning("Could not roll back campaign %s: %s", campaign_id, cleanup_exc.message)
         tail = "The campaign was deleted." if cleaned else f"Warning: could not delete the unfinished campaign {campaign_id}; delete it manually."
-        raise KeitaroError(f"Could not create streams: {exc.message} {tail}", status=exc.status, body=exc.body) from exc
+        raise KeitaroError(f"Could not create the {step}: {exc.message} {tail}", status=exc.status, body=exc.body) from exc
 
     geo_stream_id = int(geo_stream["id"]) if isinstance(geo_stream, dict) and geo_stream.get("id") is not None else None
     offer_stream_id = int(offer_stream["id"]) if isinstance(offer_stream, dict) and offer_stream.get("id") is not None else None
-    tracker_url = _tracker_url(domain["name"], alias)
+    tracker_url = _tracker_url(domain["name"] if domain else None, alias)
 
     warning = None
     try:
@@ -357,9 +424,9 @@ def create_campaign(
                 offer_name=offer["name"],
                 geo_stream_id=geo_stream_id,
                 offer_stream_id=offer_stream_id,
-                domain_id=domain["id"],
-                group_id=group["id"],
-                traffic_source_id=source["id"],
+                domain_id=domain["id"] if domain else None,
+                group_id=group["id"] if group else None,
+                traffic_source_id=source["id"] if source else None,
                 tracker_url=tracker_url,
             )
         )
@@ -377,7 +444,12 @@ def create_campaign(
         ],
         "geo": geos,
         "offer": offer,
-        "settings": {"domain": domain["name"], "group": group["name"], "source": source["name"]},
+        "settings": {
+            "domain": domain["name"] if domain else None,
+            "group": group["name"] if group else None,
+            "source": source["name"] if source else None,
+        },
+        "notes": notes,
         "warning": warning,
     }
 
@@ -444,20 +516,7 @@ def list_campaigns(db: Session, client: KeitaroClient, settings: Settings, q: st
     out.sort(key=lambda c: c["id"], reverse=True)
     return out[:limit]
 
-
-_COUNTRY_FILTERS = {"country", "country_code"}
-_FILTER_LABELS = {"country": "Countries", "country_code": "Countries"}
-_MODE_LABELS = {"accept": "accept", "reject": "exclude"}
-
-
-def _describe_filter(f: dict) -> str:
-    name = str(f.get("name") or "")
-    mode = _MODE_LABELS.get(str(f.get("mode") or ""), str(f.get("mode") or ""))
-    payload = f.get("payload")
-    value = ", ".join(str(p) for p in payload) if isinstance(payload, list) else str(payload or "")
-    return f"{_FILTER_LABELS.get(name, name)}: {mode} {value}".strip()
-
-
+# --------------------------------------------------------------------------- вспомогательное для редактора
 def _stream_offers(stream: dict) -> list[dict]:
     """Офферы потока в нормальном виде: [{offer_id, share, state}]."""
     result = []
@@ -482,91 +541,6 @@ def _is_offers_stream(stream: dict) -> bool:
     return stream.get("schema") == "landings" or bool(stream.get("offers"))
 
 
-# --------------------------------------------------------------------------- статистика
-STAT_METRICS = ["clicks", "campaign_unique_clicks", "conversions", "revenue"]
-_EMPTY_STATS = {"clicks": 0, "unique": 0, "conversions": 0, "revenue": 0.0}
-
-
-def _num(value: Any, cast=float) -> Any:
-    try:
-        return cast(value or 0)
-    except (TypeError, ValueError):
-        return cast(0)
-
-
-def _row_id(row: dict, key: str) -> Optional[int]:
-    for k in (f"{key}_id", key):
-        try:
-            return int(row[k])
-        except (KeyError, TypeError, ValueError):
-            continue
-    return None
-
-
-def _row_stats(row: dict) -> dict:
-    return {
-        "clicks": _num(row.get("clicks"), int),
-        "unique": _num(row.get("campaign_unique_clicks", row.get("unique_clicks")), int),
-        "conversions": _num(row.get("conversions"), int),
-        "revenue": _num(row.get("revenue"), float),
-    }
-
-
-def _report_rows(client: KeitaroClient, campaign_id: int, grouping: str) -> list[dict]:
-    """Один отчёт «по кампании, сгруппированный по …». Пробуем несколько вариантов запроса: разные версии
-    Keitaro по-разному принимают интервал и набор метрик."""
-    today = datetime.now(timezone.utc).date().isoformat()
-    ranges = [
-        {"interval": "all_time", "timezone": "UTC"},
-        {"from": "2000-01-01", "to": today, "timezone": "UTC"},
-    ]
-    metric_sets = [STAT_METRICS, ["clicks"]]
-    last_error: Optional[KeitaroError] = None
-    for metrics in metric_sets:
-        for rng in ranges:
-            body = {
-                "range": rng,
-                "columns": [],
-                "metrics": metrics,
-                "grouping": [grouping],
-                "filters": [{"name": "campaign_id", "operator": "EQUALS", "expression": campaign_id}],
-                "summary": False,
-                "limit": 1000,
-                "offset": 0,
-            }
-            try:
-                data = client.build_report(body)
-            except KeitaroError as exc:
-                last_error = exc
-                if exc.status in (401, 403):
-                    raise
-                continue
-            rows = data.get("rows") if isinstance(data, dict) else data
-            return [r for r in (rows or []) if isinstance(r, dict)]
-    assert last_error is not None
-    raise last_error
-
-
-def fetch_stats(client: KeitaroClient, campaign_id: int) -> dict:
-    """Клики/конверсии по потокам и офферам. Никогда не бросает исключение: если статистика недоступна,
-    редактор всё равно работает, а в интерфейсе видно причину."""
-    streams: dict[int, dict] = {}
-    offers: dict[int, dict] = {}
-    try:
-        for row in _report_rows(client, campaign_id, "stream"):
-            sid = _row_id(row, "stream")
-            if sid is not None:
-                streams[sid] = _row_stats(row)
-        for row in _report_rows(client, campaign_id, "offer"):
-            oid = _row_id(row, "offer")
-            if oid is not None:
-                offers[oid] = _row_stats(row)
-    except KeitaroError as exc:
-        return {"streams": {}, "offers": {}, "error": exc.message}
-    return {"streams": streams, "offers": offers, "error": None}
-
-
-# --------------------------------------------------------------------------- редактор: карточка и правки
 def _load_campaign(client: KeitaroClient, settings: Settings, campaign_id: int, for_edit: bool = False) -> dict:
     try:
         campaign = client.get_campaign(campaign_id)
@@ -583,150 +557,3 @@ def _load_campaign(client: KeitaroClient, settings: Settings, campaign_id: int, 
             "Other people's campaigns cannot be edited here (CAMPAIGN_PREFIX).",
         )
     return campaign
-
-
-def get_campaign_detail(client: KeitaroClient, settings: Settings, campaign_id: int, campaign: Optional[dict] = None) -> dict:
-    campaign = campaign or _load_campaign(client, settings, campaign_id)
-    streams_raw = [s for s in client.list_campaign_streams(campaign_id) if isinstance(s, dict)]
-    streams_raw.sort(key=lambda s: (s.get("position") or 0, s.get("id") or 0))
-
-    offer_ids = sorted({o["offer_id"] for s in streams_raw if _is_offers_stream(s) for o in _stream_offers(s)})
-    names = _offer_names(client, settings, offer_ids) if offer_ids else {}
-    stats = fetch_stats(client, campaign_id)
-
-    streams = []
-    for s in streams_raw:
-        sid = int(s["id"])
-        item: dict = {
-            "id": sid,
-            "position": s.get("position"),
-            "name": str(s.get("name") or f"Stream {sid}"),
-            "state": str(s.get("state") or ""),
-            "filters": [_describe_filter(f) for f in (s.get("filters") or []) if isinstance(f, dict)],
-            "stats": stats["streams"].get(sid, dict(_EMPTY_STATS)),
-        }
-        if _is_offers_stream(s):
-            offers = _stream_offers(s)
-            item["kind"] = "offers"
-            item["offers"] = [
-                {
-                    "offer_id": o["offer_id"],
-                    "name": names.get(o["offer_id"]) or f"Offer #{o['offer_id']}",
-                    "share": o["share"],
-                    "state": o["state"],
-                    "stats": stats["offers"].get(o["offer_id"], dict(_EMPTY_STATS)),
-                }
-                for o in offers
-            ]
-            item["shares_total"] = sum(o["share"] for o in offers)
-        else:
-            item["kind"] = "redirect"
-            item["target"] = str(s.get("action_payload") or "")
-            item["action_type"] = str(s.get("action_type") or "")
-        streams.append(item)
-
-    return {
-        "campaign": {
-            "id": campaign_id,
-            "name": str(campaign.get("name") or ""),
-            "alias": str(campaign.get("alias") or ""),
-            "state": str(campaign.get("state") or ""),
-        },
-        "streams": streams,
-        "stats_error": stats["error"],
-    }
-
-
-def _load_offers_stream(client: KeitaroClient, settings: Settings, campaign_id: int, stream_id: int) -> tuple[dict, dict, list[dict]]:
-    campaign = _load_campaign(client, settings, campaign_id, for_edit=True)
-    stream = next((s for s in client.list_campaign_streams(campaign_id) if isinstance(s, dict) and s.get("id") == stream_id), None)
-    if stream is None:
-        raise AppError(404, f"Stream {stream_id} was not found in campaign {campaign_id}.")
-    if not _is_offers_stream(stream):
-        raise AppError(409, "This stream has no offers: it is configured as a redirect, so there is nothing to edit.")
-    return campaign, stream, _stream_offers(stream)
-
-
-def _save_offers(client: KeitaroClient, stream_id: int, offers: list[dict], shares: list[int]) -> None:
-    payload = [{"offer_id": o["offer_id"], "share": s, "state": o["state"]} for o, s in zip(offers, shares)]
-    client.update_stream(stream_id, {"offers": payload})
-
-
-def _log_change(db: Session, campaign_id: int, stream_id: int, action: str, offer: Optional[dict], before: list[int], after: list[int]) -> None:
-    try:
-        db.add(
-            OfferChange(
-                campaign_keitaro_id=campaign_id,
-                stream_keitaro_id=stream_id,
-                action=action,
-                offer_id=offer["id"] if offer else None,
-                offer_name=offer["name"] if offer else None,
-                shares_before=before,
-                shares_after=after,
-            )
-        )
-        db.commit()
-    except SQLAlchemyError as exc:
-        db.rollback()
-        log.warning("Could not write the change log: %s", exc)
-
-
-def add_offer(db: Session, client: KeitaroClient, settings: Settings, campaign_id: int, stream_id: int, offer_id: int) -> dict:
-    campaign, _stream, current = _load_offers_stream(client, settings, campaign_id, stream_id)
-    if any(o["offer_id"] == offer_id for o in current):
-        raise AppError(409, f"Offer {offer_id} is already in this stream.")
-    offer = resolve_offer(client, settings, offer_id)
-
-    before = [o["share"] for o in current]
-    after = shares_after_add(before)
-    offers = [*current, {"offer_id": offer_id, "share": 0, "state": "active"}]
-    _save_offers(client, stream_id, offers, after)
-    _log_change(db, campaign_id, stream_id, "add", offer, before, after)
-    return get_campaign_detail(client, settings, campaign_id, campaign)
-
-
-def remove_offer(db: Session, client: KeitaroClient, settings: Settings, campaign_id: int, stream_id: int, offer_id: int) -> dict:
-    campaign, _stream, current = _load_offers_stream(client, settings, campaign_id, stream_id)
-    index = next((i for i, o in enumerate(current) if o["offer_id"] == offer_id), None)
-    if index is None:
-        raise AppError(404, f"Offer {offer_id} is not in this stream.")
-    if len(current) == 1:
-        raise AppError(409, "This is the last offer in the stream. Add another one first, then remove this one: a stream without offers sends traffic nowhere.")
-
-    before = [o["share"] for o in current]
-    after = shares_after_remove(before, index)
-    remaining = [o for i, o in enumerate(current) if i != index]
-    _save_offers(client, stream_id, remaining, after)
-    removed = offers_cache.find(offer_id) or {"id": offer_id, "name": ""}
-    _log_change(db, campaign_id, stream_id, "remove", removed, before, after)
-    return get_campaign_detail(client, settings, campaign_id, campaign)
-
-
-def equalize_shares(db: Session, client: KeitaroClient, settings: Settings, campaign_id: int, stream_id: int) -> dict:
-    campaign, _stream, current = _load_offers_stream(client, settings, campaign_id, stream_id)
-    before = [o["share"] for o in current]
-    after = shares_equal(len(current))
-    _save_offers(client, stream_id, current, after)
-    _log_change(db, campaign_id, stream_id, "equalize", None, before, after)
-    return get_campaign_detail(client, settings, campaign_id, campaign)
-
-
-def list_changes(db: Session, campaign_id: int, limit: int = 20) -> list[dict]:
-    try:
-        rows = db.scalars(
-            select(OfferChange).where(OfferChange.campaign_keitaro_id == campaign_id).order_by(OfferChange.id.desc()).limit(limit)
-        ).all()
-    except SQLAlchemyError:
-        db.rollback()
-        return []
-    return [
-        {
-            "action": r.action,
-            "offer_id": r.offer_id,
-            "offer_name": r.offer_name,
-            "shares_before": r.shares_before,
-            "shares_after": r.shares_after,
-            "created_at": _iso(r.created_at),
-        }
-        for r in rows
-    ]

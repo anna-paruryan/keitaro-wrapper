@@ -27,7 +27,7 @@ export async function request<T>(
 
     if (!res.ok) {
         const detail = (data as { detail?: string } | null)?.detail
-        throw new ApiError(detail ?? `Ошибка ${res.status}`, res.status)
+        throw new ApiError(detail ?? `Error ${res.status}`, res.status)
     }
     return data as T
 }

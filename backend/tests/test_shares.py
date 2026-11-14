@@ -2,7 +2,7 @@ import itertools
 
 import pytest
 
-from app.shares import allocate, shares_after_add, shares_after_remove, shares_equal
+from app.shares import allocate, distribute, shares_equal
 
 
 @pytest.mark.parametrize("n", range(1, 13))
@@ -17,53 +17,48 @@ def test_equal_three_gives_34_33_33():
     assert shares_equal(3) == [34, 33, 33]
 
 
-def test_add_to_single_offer_splits_evenly():
-    assert shares_after_add([100]) == [50, 50]
-
-
-def test_add_keeps_ratio_of_existing_offers():
-    after = shares_after_add([80, 20])
-    assert sum(after) == 100
-    assert after[0] > after[2] > after[1]  # 80 остаётся самым большим, 20 самым маленьким
-
-
-def test_add_to_empty_gives_100():
-    assert shares_after_add([]) == [100]
-
-
-def test_add_to_even_split_stays_even():
-    assert shares_after_add([50, 50]) == [34, 33, 33]
-    assert shares_after_add([34, 33, 33]) == [25, 25, 25, 25]
-
-
-def test_remove_from_even_split_stays_even():
-    assert shares_after_remove([34, 33, 33], 1) == [50, 50]
-    assert shares_after_remove([50, 50], 0) == [100]
-    assert shares_after_remove([25, 25, 25, 25], 3) == [34, 33, 33]
-
-
-def test_remove_redistributes_proportionally_for_custom_split():
-    assert shares_after_remove([50, 30, 20], 0) == [60, 40]
-    assert shares_after_remove([70, 20, 10], 2) == [78, 22]
-
-
-def test_remove_when_remaining_have_zero_shares_splits_evenly():
-    assert shares_after_remove([100, 0, 0], 0) == [50, 50]
-
-
 def test_allocate_handles_empty_and_zero_weights():
     assert allocate([]) == []
     assert allocate([0, 0, 0]) == [34, 33, 33]
 
 
-def test_sum_is_100_for_many_combinations():
-    for existing in itertools.chain(
-        ([x] for x in (1, 50, 100)),
-        itertools.product((0, 1, 33, 34, 50, 99), repeat=2),
-        itertools.product((1, 7, 20, 40), repeat=3),
-    ):
-        existing = list(existing)
-        assert sum(shares_after_add(existing)) == 100
-        if len(existing) > 1:
-            for i in range(len(existing)):
-                assert sum(shares_after_remove(existing, i)) == 100
+def test_allocate_keeps_proportions():
+    assert allocate([50, 30, 20]) == [50, 30, 20]
+    assert allocate([1, 1], total=75) == [38, 37]
+
+
+# ------------------------------------------------------------------ pin
+def test_distribute_without_pins_is_equal():
+    assert distribute([None, None, None]) == [34, 33, 33]
+    assert distribute([None]) == [100]
+    assert distribute([]) == []
+
+
+def test_distribute_pinned_share_stays_and_the_rest_is_split_evenly():
+    assert distribute([25, None, None, None]) == [25, 25, 25, 25]
+    assert distribute([25, None, None]) == [25, 38, 37]
+    assert distribute([None, 60, None]) == [20, 60, 20]
+
+
+def test_distribute_all_pinned_must_add_up_to_100():
+    assert distribute([25, 25, 25, 25]) == [25, 25, 25, 25]
+    with pytest.raises(ValueError, match="add up to 100"):
+        distribute([50, 30])
+
+
+def test_distribute_pins_must_leave_room_for_free_offers():
+    with pytest.raises(ValueError, match="no room"):
+        distribute([100, None])
+    with pytest.raises(ValueError, match="no room"):
+        distribute([99, None, None])
+    assert distribute([98, None, None]) == [98, 1, 1]
+
+
+def test_distribute_always_sums_to_100():
+    for pins in itertools.product((None, 1, 10, 33, 50), repeat=4):
+        try:
+            result = distribute(list(pins))
+        except ValueError:
+            continue
+        assert sum(result) == 100
+        assert all(r == p for r, p in zip(result, pins) if p is not None)

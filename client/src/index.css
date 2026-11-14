@@ -1,25 +1,39 @@
 @import "tailwindcss"; /* даёт сброс стилей; наши правила ниже важнее */
 
+/* ============================================================
+   Все цвета, радиусы и тени живут здесь, в :root.
+   Поменяешь значение переменной, и изменится всё приложение.
+   В .tsx нет ни цветов, ни размеров, только имена классов.
+   ============================================================ */
 :root {
-  /* бренд */
-  --accent: #4b3f86;        /* Индиго: кнопки, активная вкладка */
-  --accent-hover: #1a2547;  /* Чернила: наведение на кнопку */
-  --sage: #5f7399;          /* Сизый: рамка фокуса, акценты */
-  --sage-soft: #e8eaee;     /* Туман, светлый: hover, чипы, строки Removed */
-  --ochre: #a07855;
+    /* бренд */
+    --accent: #4b3f86;          /* Индиго: кнопки, активная вкладка */
+    --accent-hover: #362d6b;    /* тёмный индиго: наведение на кнопку */
+    --on-accent: #ffffff;       /* текст на акцентном фоне */
+    --sage: #5f7399;            /* Сизый: рамка фокуса, акценты */
+    --sage-soft: #e8eaf2;       /* Туман: hover, чипы */
+    --ochre: #a07855;           /* Охра: запасной акцент */
 
-  /* нейтральные */
-  --bg: #f2ebe1;            /* бежевый, как фон на самом фото */
-  --card: #fffdfa;
-  --line: #ddd3c2;
-  --text: #1a2547;          /* Чернила как цвет текста */
-  --muted: #5d6670;
+    /* нейтральные */
+    --bg: #f3f2f8;              /* фон страницы: лавандовый туман */
+    --card: #ffffff;            /* карточки, поля, шапка */
+    --line: #dcdae8;            /* рамки */
+    --text: #1a2547;            /* Чернила: основной текст */
+    --muted: #5b6482;           /* второстепенный текст */
+    --removed-bg: #e9e8ef;      /* серые (убранные) офферы */
 
-  /* статусы: жёлтый не трогаем */
-  --warn-bg: #fff3c4;
-  --warn-line: #e0b400;
-  --danger: #b3261e;
-  --radius: 10px;
+    /* статусы */
+    --warn-bg: #fff3c4;         /* жёлтый поток: есть неопубликованные правки */
+    --warn-line: #e0b400;
+    --warn-text: #7a5b00;
+    --new-row-bg: rgba(224, 180, 0, 0.14); /* новая строка оффера */
+    --danger: #b3261e;
+    --danger-bg: #fdecea;       /* фон сообщения об ошибке */
+
+    /* форма */
+    --radius: 10px;             /* карточки */
+    --radius-sm: 8px;           /* поля, кнопки, вкладки */
+    --shadow-pop: 0 8px 24px rgba(26, 37, 71, 0.12);
 }
 
 body {
@@ -43,7 +57,7 @@ body {
     flex: 1 1 140px;
     padding: 10px 16px;
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: var(--muted);
     font: inherit;
@@ -57,7 +71,7 @@ body {
 
 .tab--active {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 .container {
@@ -92,6 +106,29 @@ body {
     font-size: 12px;
 }
 
+/* маленькая метка статуса: new / removed / Unpublished */
+.tag {
+    display: inline-block;
+    margin-right: 8px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--sage-soft);
+    color: var(--sage);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.tag--new {
+    background: var(--warn-bg);
+    color: var(--warn-text);
+    border: 1px solid var(--warn-line);
+}
+
+.tag--removed {
+    background: var(--removed-bg);
+    color: var(--muted);
+}
+
 /* ---------- карточки и формы ---------- */
 .card {
     background: var(--card);
@@ -99,6 +136,12 @@ body {
     border-radius: var(--radius);
     padding: 16px;
     margin-bottom: 12px;
+}
+
+.card__title {
+    margin: 0 0 8px;
+    font-size: 15px;
+    font-weight: 700;
 }
 
 .form-grid {
@@ -122,8 +165,8 @@ body {
     width: 100%;
     padding: 10px 12px;
     border: 1px solid var(--line);
-    border-radius: 8px;
-    background: #fff;
+    border-radius: var(--radius-sm);
+    background: var(--card);
     color: var(--text);
     font: inherit;
 }
@@ -171,8 +214,8 @@ body {
 .btn {
     padding: 9px 16px;
     border: 1px solid var(--line);
-    border-radius: 8px;
-    background: #fff;
+    border-radius: var(--radius-sm);
+    background: var(--card);
     color: var(--text);
     font: inherit;
     cursor: pointer;
@@ -195,7 +238,7 @@ body {
 .btn--primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     font-weight: 600;
 }
 
@@ -237,8 +280,8 @@ body {
     overflow: auto;
     background: var(--card);
     border: 1px solid var(--line);
-    border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(31, 42, 54, 0.12);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-pop);
 }
 
 .ac__item {
@@ -247,7 +290,8 @@ body {
     cursor: pointer;
 }
 
-.ac__item:hover, .ac__item--active {
+.ac__item:hover,
+.ac__item--active {
     background: var(--sage-soft);
 }
 
@@ -259,13 +303,18 @@ body {
 /* ---------- сообщения ---------- */
 .alert {
     padding: 10px 12px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     margin-bottom: 12px;
     font-size: 14px;
 }
 
+.alert--error {
+    background: var(--danger-bg);
+    border: 1px solid var(--danger);
+    color: var(--danger);
+}
 
-/* ---------- поток и офферы ---------- */
+/* ---------- поток и офферы (редактор) ---------- */
 .stream {
     margin-bottom: 12px;
     overflow: hidden;
@@ -274,6 +323,7 @@ body {
     border-radius: var(--radius);
 }
 
+/* жёлтый: в потоке есть неопубликованные правки */
 .stream--dirty {
     background: var(--warn-bg);
     border-color: var(--warn-line);
@@ -284,15 +334,46 @@ body {
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
+    align-items: flex-start;
     gap: 8px;
     padding: 12px 16px;
 }
 
+.stream__title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.stream__meta {
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
 .stream__actions {
     display: flex;
+    align-items: center;
     gap: 8px;
 }
 
+.stream__empty {
+    margin: 0;
+    padding: 0 16px 14px;
+    color: var(--muted);
+    font-size: 14px;
+}
+.stream__footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--line);
+}
+
+.stream--dirty .stream__footer {
+    border-top-color: var(--warn-line);
+}
+.stream__footer .field {
+    margin-bottom: 0;
+}
 .offer-row {
     display: flex;
     flex-direction: column;
@@ -301,16 +382,26 @@ body {
     border-top: 1px solid var(--line);
 }
 
-.offer-row--new {
-    background: rgba(255, 235, 150, 0.4);
+.stream--dirty .offer-row {
+    border-top-color: var(--warn-line);
 }
 
+.offer-row--new {
+    background: var(--new-row-bg);
+}
+
+/* серый: оффер убран (он остаётся в архиве, его можно вернуть) */
 .offer-row--removed {
-    background: var(--sage-soft);
-    opacity: 0.55;
+    background: var(--removed-bg);
+    color: var(--muted);
+}
+
+.offer-row--removed .offer-row__name {
+    text-decoration: line-through;
 }
 
 .offer-row__name {
+    font-size: 14px;
     overflow-wrap: anywhere;
 }
 
@@ -324,6 +415,7 @@ body {
     min-width: 48px;
     text-align: right;
     font-weight: 700;
+    font-variant-numeric: tabular-nums;
 }
 
 /* ---------- экраны от 640px ---------- */

@@ -1,10 +1,26 @@
 import { request } from './http'
 import type { Stream } from '@/types'
 
+export interface MyCampaign {
+    id: number
+    name: string
+    alias: string
+    state: string
+    created_here: boolean
+}
+
 const post = <T>(path: string, body?: unknown) => request<T>(path, { method: 'POST', body })
 
+// Own campaigns (name starts with the prefix): for the quick-pick list in the editor
+export const getMyCampaigns = () => request<MyCampaign[]>('/campaigns?mine=true')
+
+// Streams and drafts saved in our DB (no request to Keitaro): restores the page after a reload
+export const getSavedStreams = (campaignId: number) =>
+    request<{ campaign_id: number; streams: Stream[] }>(`/campaigns/${campaignId}/streams`)
+
+// Fetch Streams: reads Keitaro and reconciles it with our DB
 export const fetchStreams = (campaignId: number) =>
-    post<{ streams: Stream[] }>(`/campaigns/${campaignId}/fetch`)
+    post<{ campaign: { id: number; name: string }; streams: Stream[] }>(`/campaigns/${campaignId}/fetch`)
 
 export const addOffer = (streamId: number, offerId: number) =>
     post<Stream>(`/streams/${streamId}/offers`, { offer_id: offerId })

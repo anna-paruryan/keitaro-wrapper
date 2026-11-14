@@ -14,3 +14,7 @@ class CreateCampaignIn(BaseModel):
 
 class OfferIn(BaseModel):
     offer_id: int = Field(gt=0)
+
+
+class PinIn(BaseModel):
+    pinned: bool

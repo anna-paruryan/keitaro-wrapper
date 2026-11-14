@@ -9,6 +9,7 @@
 это будет видно сразу (и понятно, какую константу поправить в app/keitaro.py или app/services.py).
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -41,6 +42,20 @@ def names(items, limit=8):
     return ", ".join(shown) + (" …" if len(items) > limit else "")
 
 
+def survey_streams(client, campaigns, limit=20):
+    """Как потоки реально выглядят в трекере: по одному примеру каждой «формы»."""
+    shapes = {}
+    for c in campaigns[:limit]:
+        try:
+            streams = client.list_campaign_streams(int(c["id"]))
+        except KeitaroError:
+            continue
+        for s in streams:
+            key = (s.get("schema"), s.get("type"), s.get("action_type"), bool(s.get("offers")), bool(s.get("filters")))
+            shapes.setdefault(key, (c, s))
+    return shapes
+
+
 def main() -> int:
     settings = get_settings()
     if not settings.keitaro_configured:
@@ -63,7 +78,7 @@ def main() -> int:
         print(f"      defaults: {meta['defaults']}  (names from .env: group={settings.keitaro_group_name}, source={settings.keitaro_source_name})")
 
     step("GET /stream_filters", client.list_stream_filters)
-    print(f"      country filter: '{services.detect_country_filter(client, settings)}»")
+    print(f"      country filter: '{services.detect_country_filter(client, settings)}'")
 
     campaigns = step("GET /campaigns", client.list_campaigns) or []
     mine = [c for c in campaigns if str(c.get("name", "")).startswith(settings.campaign_prefix)] if settings.campaign_prefix else []
@@ -75,12 +90,11 @@ def main() -> int:
         if streams:
             s = streams[0]
             print(f"      stream: schema={s.get('schema')} type={s.get('type')} filters={s.get('filters')} offers={s.get('offers')}")
-        for grouping in ("stream", "offer"):
-            rows = step(f"POST /report/build (grouped by {grouping})", lambda g=grouping: services._report_rows(client, cid, g))
-            if rows is not None:
-                print(f"      rows: {len(rows)}" + (f"; fields: {sorted(rows[0])}" if rows else ""))
-    else:
-        print("      no campaigns yet: skipping report checks (create one in the form and run again)")
+    shapes = step("scan streams of existing campaigns", lambda: survey_streams(client, campaigns)) if campaigns else None
+    for (schema, kind, action, has_offers, has_filters), (c, s) in (shapes or {}).items():
+        print(f"      shape: schema={schema} type={kind} action_type={action} offers={has_offers} filters={has_filters}"
+              f"  (e.g. campaign #{c.get('id')} '{c.get('name')}')")
+        print("        " + json.dumps(s, ensure_ascii=False)[:700])
 
     print("\nSUMMARY:", "everything responds as expected" if not failed else f"problems: {failed}, see FAIL above")
     return 1 if failed else 0

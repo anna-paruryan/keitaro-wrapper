@@ -45,6 +45,8 @@ class FakeKeitaro:
         self.calls: list[tuple[str, str, Any]] = []
         self.fail_stream_number: Optional[int] = None  # на каком по счёту создании потока вернуть 500
         self._created_streams = 0
+        self.used_names: set[str] = set()  # имя остаётся занятым и после удаления: кампания уходит в архив
+        self.campaign_errors: Optional[dict] = None  # если задано, POST /campaigns вернёт 422 с этим телом
         self.report_mode = "ok"  # ok | no_extra_metrics | fail
         self.stats_offer = {101: {"clicks": 40, "campaign_unique_clicks": 30, "conversions": 4, "revenue": 12.5}}
         self.stats_stream: dict[int, dict] = {}
@@ -96,7 +98,10 @@ class FakeKeitaro:
         if path == "domains":
             return ok(self.domains)
         if path == "groups":
-            return ok(self.groups)
+            group_type = request.url.params.get("type")
+            if not group_type:  # как настоящий Keitaro
+                return httpx.Response(400, json={"error": "Param 'type' is required."})
+            return ok([g for g in self.groups if g.get("type", "campaigns") == group_type])
         if path == "traffic_sources":
             return ok(self.sources)
         if path == "stream_filters":
@@ -104,6 +109,11 @@ class FakeKeitaro:
         if path == "campaigns" and method == "GET":
             return ok(list(self.campaigns.values()))
         if path == "campaigns" and method == "POST":
+            if self.campaign_errors:
+                return httpx.Response(422, json=self.campaign_errors)
+            if body["name"] in self.used_names:
+                return httpx.Response(422, json={"name": ["Name has already been used in the archive"]})
+            self.used_names.add(body["name"])
             self._cid += 1
             self.campaigns[self._cid] = {**body, "id": self._cid}
             return ok(self.campaigns[self._cid])
@@ -124,6 +134,8 @@ class FakeKeitaro:
             self._created_streams += 1
             if self.fail_stream_number == self._created_streams:
                 return httpx.Response(500, json={"error": "Internal error"})
+            if not body.get("action_type"):  # как настоящий Keitaro
+                return httpx.Response(422, json={"action_type": ["Action Type is required"]})
             self._sid += 1
             self.streams[self._sid] = {**body, "id": self._sid}
             return ok(self.streams[self._sid])

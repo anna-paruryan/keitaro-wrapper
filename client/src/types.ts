@@ -1,13 +1,18 @@
 export interface Option { id: number; name: string }
 export interface OfferShort { id: number; name: string; state: string }
 
-export interface Meta {
+export type Meta = {
     prefix: string
     google_url: string
     domains: Option[]
     groups: Option[]
     sources: Option[]
-    defaults: { domain_id: number | null; group_id: number | null; traffic_source_id: number | null }
+    notes: Record<string, string>
+    defaults: {
+        domain_id: number | null
+        group_id: number | null
+        traffic_source_id: number | null
+    }
 }
 
 export interface CreateCampaignBody {
@@ -19,17 +24,25 @@ export interface CreateCampaignBody {
     traffic_source_id?: number
 }
 
-export interface CreateCampaignResult {
+export type CreateCampaignResult = {
     campaign: { id: number; name: string; alias: string; tracker_url: string | null }
     streams: { id: number | null; position: number; title: string }[]
     geo: string[]
     offer: OfferShort
-    settings: { domain: string; group: string; source: string }
+    settings: { domain: string | null; group: string | null; source: string | null }
+    notes: Record<string, string>
     warning: string | null
 }
 
 export type OfferStatus = 'active' | 'new' | 'removed'
-
+export interface StreamOffer {
+    offer_id: number
+    name: string
+    share: number
+    pinned: boolean
+    status: OfferStatus   // active = белая, new = жёлтая, removed = серая
+    dirty: boolean
+}
 export interface Offer {
     offer_id: number
     name: string
@@ -39,9 +52,11 @@ export interface Offer {
 }
 
 export interface Stream {
-    id: number
+    id: number            // ID потока в Keitaro
+    campaign_id: number
     name: string
     position: number
-    is_dirty: boolean
-    offers: Offer[]
+    has_offers: boolean   // false = поток-редирект: рисуем только заголовок
+    dirty: boolean        // true = поток жёлтый, показываем Push и Cancel
+    offers: StreamOffer[]
 }

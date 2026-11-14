@@ -31,6 +31,7 @@ def test_creates_campaign_with_two_streams(http, fake):
     assert geo_stream["filters"] == [{"name": "country", "mode": "accept", "payload": ["MX", "AU"]}]
 
     assert offer_stream["position"] == 2
+    assert offer_stream["action_type"]  # Keitaro rejects streams without it (422)
     assert offer_stream["filters"] == []
     assert offer_stream["offers"] == [{"offer_id": 101, "share": 100, "state": "active"}]
 
@@ -110,11 +111,33 @@ def test_stream_failure_rolls_back_campaign(http, fake):
     assert http.get("/api/history").json() == []
 
 
-def test_missing_group_gives_clear_error(http, fake):
+def test_unknown_group_falls_back_to_first_with_note(http, fake):
     fake.groups = [{"id": 11, "name": "OTHER", "type": "campaigns"}]
     resp = create(http)
+    assert resp.status_code == 201, resp.text
+    (campaign,) = fake.campaigns.values()
+    assert campaign["group_id"] == 11
+    assert "FORTESTS" in resp.json()["notes"]["group"]
+
+
+def test_tracker_without_domains_groups_sources_still_creates(http, fake):
+    """Как в реальном трекере: ни доменов, ни источников, группы нет, всё равно кампания создаётся."""
+    fake.domains, fake.groups, fake.sources = [], [], []
+    resp = create(http)
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    (campaign,) = fake.campaigns.values()
+    assert "domain_id" not in campaign and "group_id" not in campaign and "traffic_source_id" not in campaign
+    assert data["campaign"]["tracker_url"] is None
+    assert data["settings"] == {"domain": None, "group": None, "source": None}
+    assert set(data["notes"]) == {"domain", "group", "source"}
+    assert len(fake.streams) == 2
+
+
+def test_explicit_unknown_id_is_an_error(http, fake):
+    resp = create(http, group_id=999)
     assert resp.status_code == 422
-    assert "FORTESTS" in resp.json()["detail"]
+    assert "999" in resp.json()["detail"]
     assert fake.campaigns == {}
 
 
@@ -122,6 +145,7 @@ def test_meta_returns_options_and_defaults(http):
     meta = http.get("/api/meta").json()
     assert meta["prefix"] == PREFIX
     assert meta["defaults"] == {"domain_id": 1, "group_id": 10, "traffic_source_id": 20}
+    assert meta["notes"] == {}
     assert [g["id"] for g in meta["groups"]] == [10, 11]  # группа офферов с тем же названием не попала
 
 
@@ -131,3 +155,32 @@ def test_offer_search_by_name_and_id(http):
     by_id = http.get("/api/offers", params={"q": "103"}).json()
     assert by_id[0]["id"] == 103
     assert len(http.get("/api/offers", params={"limit": 2}).json()) == 2
+
+
+def test_duplicate_name_gives_a_friendly_409(http, fake):
+    ok = http.post("/api/campaigns", json={"name": "ui1", "geo": "AU", "offer_id": 101})
+    assert ok.status_code == 201
+
+    again = http.post("/api/campaigns", json={"name": "ui1", "geo": "AU", "offer_id": 101})
+    assert again.status_code == 409
+    detail = again.json()["detail"]
+    assert "test_ivanov_ui1" in detail and "already used" in detail and "Choose a different name" in detail
+    assert len(fake.campaigns) == 1  # вторая кампания не создана
+
+
+def test_name_stays_taken_after_a_failed_creation_was_rolled_back(http, fake):
+    fake.fail_stream_number = 2
+    assert http.post("/api/campaigns", json={"name": "ui2", "geo": "AU", "offer_id": 101}).status_code == 502
+    assert fake.campaigns == {}  # откат удалил кампанию (в настоящем Keitaro она уходит в архив)
+
+    fake.fail_stream_number = None
+    retry = http.post("/api/campaigns", json={"name": "ui2", "geo": "AU", "offer_id": 101})
+    assert retry.status_code == 409  # имя в архиве всё ещё занято: нужно другое
+    assert http.post("/api/campaigns", json={"name": "ui3", "geo": "AU", "offer_id": 101}).status_code == 201
+
+
+def test_other_keitaro_validation_errors_are_explained(http, fake):
+    fake.campaign_errors = {"errors": {"group_id": ["Group is invalid"], "name": ["Name is too long"]}}
+    r = http.post("/api/campaigns", json={"name": "x", "geo": "AU", "offer_id": 101})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Keitaro rejected the campaign: group_id: Group is invalid; name: Name is too long."
