@@ -2,7 +2,7 @@
 
 Веб-приложение поверх трекера Keitaro: создаёт кампании и редактирует доли трафика между офферами через Admin API.
 Тестовое задание «Обёртка над Keitaro».
-
+Видео:https://drive.google.com/file/d/1FA8VCEJNH0HattojM8Re6bJv1zJX8oTu/view?usp=sharing
 **Стек:** FastAPI · SQLAlchemy 2 · Alembic · SQLite / PostgreSQL · React · TypeScript · Vite
 
 ## Что умеет
